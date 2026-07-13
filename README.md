@@ -27,9 +27,13 @@ https://raw.githubusercontent.com/JansenDevelopment/claude-usage-data/data/usage
    This writes `storage_state.json`. Keep it private — it grants access to your
    claude.ai session.
 
-2. **Create a fine-grained PAT** (GitHub → Settings → Developer settings →
-   Fine-grained tokens): access limited to **only this repo**, permission
-   **Contents: Read and write**.
+2. **Create a fine-grained PAT** at
+   <https://github.com/settings/personal-access-tokens> → **Generate new token**:
+   - **Resource owner:** the account that owns this repo
+   - **Repository access → Only select repositories:** this repo
+   - **Permissions → Repository → Contents: Read and write** (that's the one covering
+     "Repository contents, commits, branches, downloads, releases, and merges" — no
+     other permission is needed)
 
 3. **Add three repo secrets** (Settings → Secrets and variables → Actions → New
    repository secret):
