@@ -1,0 +1,64 @@
+# Runs push_usage.py on a schedule and commits usage.json to the `data` branch,
+# so the Tidbyt app can read it from a raw GitHub URL -- no laptop, no jsonbin.
+#
+# Copy this file to  .github/workflows/push-usage.yml  in your new public repo,
+# next to a copy of push_usage.py. See github-actions/README.md for the full setup.
+
+name: push-usage
+
+on:
+  schedule:
+    # Every 10 minutes. GitHub cron is best-effort (often 5-15 min); that's fine,
+    # the app recomputes the countdown live from reset_at. Minimum interval is 5m.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}   # adds a manual "Run workflow" button (use it to test)
+
+concurrency:
+  group: push-usage
+  cancel-in-progress: false   # let a slow run finish rather than overlap
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (code)
+        uses: actions/checkout@v4
+        with:
+          # PAT so the later push counts as user activity and the cron is never
+          # auto-disabled after 60 days of inactivity.
+          token: ${{ secrets.DATA_PUSH_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Playwright + Chromium
+        run: |
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Seed usage.json from the data branch (keeps the history)
+        run: |
+          if git fetch origin data 2>/dev/null; then
+            git show origin/data:usage.json > usage.json 2>/dev/null || echo '{}' > usage.json
+          else
+            echo '{}' > usage.json
+          fi
+
+      - name: Fetch usage and write usage.json
+        env:
+          CLAUDE_SESSION_STATE: ${{ secrets.CLAUDE_SESSION_STATE }}
+          CLAUDE_USAGE_URL: ${{ secrets.CLAUDE_USAGE_URL }}
+          USAGE_OUTPUT_FILE: usage.json
+        run: python push_usage.py
+
+      - name: Publish to the data branch (single force-pushed commit)
+        run: |
+          git config user.name "usage-bot"
+          git config user.email "usage-bot@users.noreply.github.com"
+          git checkout --orphan data-tmp
+          git reset                       # unstage everything from the code branch
+          git add -f usage.json
+          git commit -m "Update usage.json"
+          git push -f origin data-tmp:data
