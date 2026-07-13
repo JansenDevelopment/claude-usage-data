@@ -1,8 +1,6 @@
 # Runs push_usage.py on a schedule and commits usage.json to the `data` branch,
 # so the Tidbyt app can read it from a raw GitHub URL -- no laptop, no jsonbin.
-#
-# Copy this file to  .github/workflows/push-usage.yml  in your new public repo,
-# next to a copy of push_usage.py. See github-actions/README.md for the full setup.
+# See README.md for the full (fork-and-go) setup.
 
 name: push-usage
 
@@ -53,8 +51,14 @@ jobs:
           USAGE_OUTPUT_FILE: usage.json
         run: python push_usage.py
 
-      - name: Publish to the data branch (single force-pushed commit)
+      - name: Publish to the data branch (only if changed)
         run: |
+          # Dedup: when usage hasn't changed, push_usage.py leaves usage.json equal
+          # to what's already on the data branch -- so there's nothing to publish.
+          if git show origin/data:usage.json 2>/dev/null | diff -q - usage.json >/dev/null 2>&1; then
+            echo "usage.json unchanged -- nothing to publish."
+            exit 0
+          fi
           git config user.name "usage-bot"
           git config user.email "usage-bot@users.noreply.github.com"
           git checkout --orphan data-tmp

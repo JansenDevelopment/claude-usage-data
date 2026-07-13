@@ -257,27 +257,30 @@ def _history_from_record(rec):
     return out
 
 
-def read_history():
-    """Read the existing trend history (empty if unreadable). From the output file
-    in file mode, otherwise from the jsonbin bin."""
+def read_prev():
+    """Read the existing state: (history, last_percent, last_reset). From the output
+    file in file mode, otherwise from the jsonbin bin. Empty/None if unreadable."""
+    rec = None
     if OUTPUT_FILE:
         try:
             with open(OUTPUT_FILE, encoding="utf-8") as f:
-                return _history_from_record(json.load(f))
+                rec = json.load(f)
         except Exception:
-            return []
-    if not BIN_ID:
-        return []
-    req = urllib.request.Request(
-        "https://api.jsonbin.io/v3/b/%s/latest" % BIN_ID, headers=_auth_headers()
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return []
-    rec = raw.get("record", raw) if isinstance(raw, dict) else {}
-    return _history_from_record(rec)
+            rec = None
+    elif BIN_ID:
+        req = urllib.request.Request(
+            "https://api.jsonbin.io/v3/b/%s/latest" % BIN_ID, headers=_auth_headers()
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+            rec = raw.get("record", raw) if isinstance(raw, dict) else {}
+        except Exception:
+            rec = None
+    history = _history_from_record(rec)
+    last_p = history[-1]["p"] if history else None
+    last_reset = rec.get("reset_at") if isinstance(rec, dict) else None
+    return history, last_p, last_reset
 
 
 def push(payload):
@@ -352,7 +355,16 @@ def main():
         print(json.dumps(data, indent=2, ensure_ascii=False))
         return 1
 
-    history = read_history()
+    history, last_p, last_reset = read_prev()
+
+    # Nothing changed since the last push (same percent and same reset window)?
+    # Then don't touch the target -- it would only add a duplicate history point.
+    # A new session resets the percent and reset_at, so that still gets pushed,
+    # and the app's countdown keeps ticking on its own from reset_at.
+    if last_p is not None and payload["percent"] == last_p and payload["reset_at"] == last_reset:
+        print("unchanged (%d%%, reset %s) -- not pushed." % (last_p, last_reset))
+        return 0
+
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     history.append({"t": now_iso, "p": payload["percent"]})
     payload["history"] = history[-HISTORY_MAX:]
