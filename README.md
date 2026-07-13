@@ -7,7 +7,7 @@ over a raw URL — no laptop and no jsonbin needed.
 The app reads:
 
 ```
-https://raw.githubusercontent.com/MartijnJansenBoikon/claude-usage-data/data/usage.json
+https://raw.githubusercontent.com/JansenDevelopment/claude-usage-data/data/usage.json
 ```
 
 > **The one real risk:** GitHub runners use datacenter IPs, which Cloudflare
