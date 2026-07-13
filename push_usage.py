@@ -209,6 +209,22 @@ def _norm_ts(s):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _same_reset(a, b, tol=120):
+    """Whether two reset_at stamps mean the same 5-hour window. resets_at jitters a
+    second or two between reads (microseconds straddling a second boundary), so we
+    allow a small tolerance; a genuinely new session moves it by hours."""
+    if a == b:
+        return True
+    if not a or not b:
+        return a == b
+    try:
+        da = datetime.fromisoformat(a.replace("Z", "+00:00"))
+        db = datetime.fromisoformat(b.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return a == b
+    return abs((da - db).total_seconds()) <= tol
+
+
 def extract(data):
     """Map the claude.ai usage JSON to {active, percent, reset_at}.
 
@@ -361,8 +377,8 @@ def main():
     # Then don't touch the target -- it would only add a duplicate history point.
     # A new session resets the percent and reset_at, so that still gets pushed,
     # and the app's countdown keeps ticking on its own from reset_at.
-    if last_p is not None and payload["percent"] == last_p and payload["reset_at"] == last_reset:
-        print("unchanged (%d%%, reset %s) -- not pushed." % (last_p, last_reset))
+    if last_p is not None and payload["percent"] == last_p and _same_reset(payload["reset_at"], last_reset):
+        print("unchanged (%d%%, reset ~%s) -- not pushed." % (last_p, last_reset))
         return 0
 
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
