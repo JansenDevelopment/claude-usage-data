@@ -1,21 +1,21 @@
-# Refreshes your Claude usage on a schedule.
+# Refreshes your Claude usage on a schedule. Two routes, auto-detected:
 #
-# jsonbin is the CENTRAL store (shared with the laptop's Claude Code Stop hook, which
-# also writes to the same bin). This workflow:
-#   1. pushes usage to jsonbin (deduped) -- reads the current jsonbin history, appends
-#      a point only when something changed, so the laptop's points are preserved;
-#   2. mirrors jsonbin -> the `data` branch as a raw-URL backup that also keeps the
-#      cron alive (a PAT commit counts as repo activity vs the 60-day auto-disable).
+#   * Raw-URL (fork-and-go): no jsonbin secrets set -> writes usage.json to the
+#     `data` branch; the app reads it from the raw GitHub URL. Simplest.
+#   * jsonbin hybrid: JSONBIN_BIN_ID + JSONBIN_ACCESS_KEY set -> pushes usage to a
+#     central jsonbin bin (deduped, shared with an optional laptop Stop hook) and
+#     mirrors it to the `data` branch as a backup. The app reads jsonbin (freshest).
 #
-# The Tidbyt app reads jsonbin directly (freshest); the data branch is just backup.
-# See README.md for the full (fork-and-go) setup.
+# Either way the `data` branch commit (with DATA_PUSH_PAT) keeps the cron alive vs
+# GitHub's 60-day auto-disable. See README.md for the full setup.
 
 name: push-usage
 
 on:
   schedule:
-    # Every 10 minutes. GitHub cron is best-effort (often 5-15 min); that's fine,
-    # the app recomputes the countdown live from reset_at. Minimum interval is 5m.
+    # Every 10 minutes. GitHub cron is best-effort (often much later / skipped);
+    # that's fine -- the app recomputes the countdown live from reset_at, and the
+    # optional laptop hook keeps jsonbin fresh between runs. Minimum interval is 5m.
     - cron: "*/10 * * * *"
   workflow_dispatch: {}   # adds a manual "Run workflow" button (use it to test)
 
@@ -31,8 +31,8 @@ jobs:
       - name: Checkout (code)
         uses: actions/checkout@v4
         with:
-          # PAT so the mirror push counts as user activity and the cron is never
-          # auto-disabled after 60 days of inactivity.
+          # PAT so the data-branch commit counts as user activity and the cron is
+          # never auto-disabled after 60 days of inactivity.
           token: ${{ secrets.DATA_PUSH_PAT }}
 
       - uses: actions/setup-python@v5
@@ -44,27 +44,36 @@ jobs:
           pip install playwright
           python -m playwright install --with-deps chromium
 
-      - name: Push usage to jsonbin (central store, deduped)
+      - name: Refresh usage.json (jsonbin hybrid, or raw-URL fallback)
         env:
           CLAUDE_SESSION_STATE: ${{ secrets.CLAUDE_SESSION_STATE }}
           CLAUDE_USAGE_URL: ${{ secrets.CLAUDE_USAGE_URL }}
           JSONBIN_BIN_ID: ${{ secrets.JSONBIN_BIN_ID }}
           JSONBIN_ACCESS_KEY: ${{ secrets.JSONBIN_ACCESS_KEY }}
-        # No USAGE_OUTPUT_FILE -> jsonbin mode: read jsonbin, append if changed, write.
-        run: python push_usage.py
-
-      - name: Mirror jsonbin -> data branch (backup, keeps the cron alive)
-        env:
-          JSONBIN_BIN_ID: ${{ secrets.JSONBIN_BIN_ID }}
-          JSONBIN_ACCESS_KEY: ${{ secrets.JSONBIN_ACCESS_KEY }}
         run: |
-          # Pull the current central state and unwrap the jsonbin {"record": ...}.
-          curl -sf -H "X-Access-Key: $JSONBIN_ACCESS_KEY" -H "User-Agent: Mozilla/5.0" \
-            "https://api.jsonbin.io/v3/b/$JSONBIN_BIN_ID/latest" \
-            | python -c "import sys,json; d=json.load(sys.stdin); json.dump(d.get('record', d), open('usage.json','w'))"
+          if [ -n "$JSONBIN_BIN_ID" ]; then
+            echo "jsonbin mode: push to the central bin (deduped), then mirror to usage.json."
+            python push_usage.py
+            curl -sf -H "X-Access-Key: $JSONBIN_ACCESS_KEY" -H "User-Agent: Mozilla/5.0" \
+              "https://api.jsonbin.io/v3/b/$JSONBIN_BIN_ID/latest" \
+              | python -c "import sys,json; d=json.load(sys.stdin); json.dump(d.get('record', d), open('usage.json','w'))"
+          else
+            echo "raw-URL mode: write usage.json for the data branch."
+            if git fetch origin data 2>/dev/null; then
+              git show origin/data:usage.json > usage.json 2>/dev/null || echo '{}' > usage.json
+            else
+              echo '{}' > usage.json
+            fi
+            USAGE_OUTPUT_FILE=usage.json python push_usage.py
+          fi
+
+      - name: Publish usage.json to the data branch (only if changed)
+        run: |
+          # Dedup: when usage hasn't changed, usage.json equals what's on the data
+          # branch already -- so there's nothing to publish.
           git fetch origin data 2>/dev/null || true
           if git show origin/data:usage.json 2>/dev/null | diff -q - usage.json >/dev/null 2>&1; then
-            echo "usage.json unchanged -- nothing to mirror."
+            echo "usage.json unchanged -- nothing to publish."
             exit 0
           fi
           git config user.name "usage-bot"
@@ -72,5 +81,5 @@ jobs:
           git checkout --orphan data-tmp
           git reset                       # unstage everything from the code branch
           git add -f usage.json
-          git commit -m "Mirror usage.json"
+          git commit -m "Update usage.json"
           git push -f origin data-tmp:data
